@@ -17,7 +17,11 @@
     contrast: 0.0,
     dotSize: 2,
     dotSpacing: 6,
-    gain: 1.0
+    gain: 1.0,
+    hoverRadius: 120,  // reach of the cursor effect, CSS px · 0 disables it
+    hoverGrow: 1.6,    // how much dots swell at the centre of the cursor
+    hoverGlow: 0.8,    // extra brightness at the centre of the cursor
+    hoverEase: 0.12    // cursor follow damping · lower = laggier, softer
   };
 
   var VERT =
@@ -39,6 +43,11 @@
   'uniform float uDotSpacing;\n' +
   'uniform float uDotRadius;\n' +
   'uniform float uGain;\n' +
+  'uniform vec2 uMouse;\n' +
+  'uniform float uHoverRadius;\n' +
+  'uniform float uHoverAmt;\n' +
+  'uniform float uHoverGrow;\n' +
+  'uniform float uHoverGlow;\n' +
   'out vec4 fragColor;\n' +
   'vec3 permute(vec3 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }\n' +
   'float snoise(vec2 v){\n' +
@@ -92,9 +101,19 @@
   '  rampT = clamp(rampT, 0.0, 1.0);\n' +
   '  rampT = mix(rampT, smoothstep(0.0, 1.0, rampT), uContrast);\n' +
   '  COLOR_RAMP(colors, rampT, rampColor);\n' +
-  '  vec3 auroraColor = rampColor * uGain;\n' +
-  '  vec2 cell = mod(gl_FragCoord.xy, uDotSpacing) - uDotSpacing * 0.5;\n' +
-  '  float dotMask = 1.0 - smoothstep(uDotRadius - 0.5, uDotRadius + 0.5, length(cell));\n' +
+  // Work from the dot's centre rather than the raw fragment, so the whole
+  // dot reacts as one unit instead of shading across its own width.
+  '  vec2 cellIndex = floor(gl_FragCoord.xy / uDotSpacing);\n' +
+  '  vec2 dotCenter = (cellIndex + 0.5) * uDotSpacing;\n' +
+  '  vec2 cell = gl_FragCoord.xy - dotCenter;\n' +
+  '  float hover = 0.0;\n' +
+  '  if (uHoverRadius > 0.0) {\n' +
+  '    hover = 1.0 - smoothstep(0.0, uHoverRadius, distance(dotCenter, uMouse));\n' +
+  '    hover = hover * hover * uHoverAmt;\n' + // squared = tighter, less mushy falloff
+  '  }\n' +
+  '  float radius = uDotRadius * (1.0 + hover * uHoverGrow);\n' +
+  '  float dotMask = 1.0 - smoothstep(radius - 0.5, radius + 0.5, length(cell));\n' +
+  '  vec3 auroraColor = rampColor * uGain * (1.0 + hover * uHoverGlow);\n' +
   '  float a = auroraAlpha * dotMask;\n' +
   '  fragColor = vec4(auroraColor * a, a);\n' +
   '}';
@@ -133,7 +152,11 @@
       contrast: num(el, 'data-contrast', DEFAULTS.contrast),
       dotSize: num(el, 'data-dot-size', DEFAULTS.dotSize),
       dotSpacing: num(el, 'data-dot-spacing', DEFAULTS.dotSpacing),
-      gain: num(el, 'data-gain', DEFAULTS.gain)
+      gain: num(el, 'data-gain', DEFAULTS.gain),
+      hoverRadius: num(el, 'data-hover-radius', DEFAULTS.hoverRadius),
+      hoverGrow: num(el, 'data-hover-grow', DEFAULTS.hoverGrow),
+      hoverGlow: num(el, 'data-hover-glow', DEFAULTS.hoverGlow),
+      hoverEase: num(el, 'data-hover-ease', DEFAULTS.hoverEase)
     };
   }
 
@@ -188,7 +211,12 @@
       uContrast: loc('uContrast'),
       uDotSpacing: loc('uDotSpacing'),
       uDotRadius: loc('uDotRadius'),
-      uGain: loc('uGain')
+      uGain: loc('uGain'),
+      uMouse: loc('uMouse'),
+      uHoverRadius: loc('uHoverRadius'),
+      uHoverAmt: loc('uHoverAmt'),
+      uHoverGrow: loc('uHoverGrow'),
+      uHoverGlow: loc('uHoverGlow')
     };
 
     var stops = new Float32Array(
@@ -201,6 +229,10 @@
     gl.uniform1f(U.uDrift, cfg.drift);
     gl.uniform1f(U.uContrast, cfg.contrast);
     gl.uniform1f(U.uGain, cfg.gain);
+    gl.uniform1f(U.uHoverGrow, cfg.hoverGrow);
+    gl.uniform1f(U.uHoverGlow, cfg.hoverGlow);
+
+    var curDpr = 1;
 
     function resize() {
       var dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -208,6 +240,7 @@
       var w = Math.max(1, Math.floor(rect.width * dpr));
       var h = Math.max(1, Math.floor(rect.height * dpr));
       if (canvas.width === w && canvas.height === h) return;
+      curDpr = dpr;
       canvas.width = w;
       canvas.height = h;
       gl.viewport(0, 0, w, h);
@@ -215,6 +248,7 @@
       var spacing = Math.max(2, Math.round(cfg.dotSpacing * dpr));
       gl.uniform1f(U.uDotSpacing, spacing);
       gl.uniform1f(U.uDotRadius, (cfg.dotSize * dpr) * 0.5);
+      gl.uniform1f(U.uHoverRadius, cfg.hoverRadius * dpr);
     }
 
     if (window.ResizeObserver) {
@@ -227,11 +261,52 @@
     var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     var speed = reduceMotion ? 0 : cfg.speed;
 
+    // ---- Cursor tracking ----
+    // The canvas is pointer-events:none so it never receives events itself.
+    // Listening on window and converting against its rect keeps the canvas
+    // click-through while still following the cursor over it.
+    var mx = -9999, my = -9999;      // eased position, CSS px, canvas-local
+    var tx = -9999, ty = -9999;      // raw target
+    var amt = 0, tamt = 0;           // presence, fades the effect in and out
+    var hoverOn = cfg.hoverRadius > 0 &&
+                  !reduceMotion &&
+                  window.matchMedia('(pointer: fine)').matches;
+
+    if (hoverOn) {
+      window.addEventListener('pointermove', function (e) {
+        var r = canvas.getBoundingClientRect();
+        var x = e.clientX - r.left;
+        var y = e.clientY - r.top;
+        var inside = x >= 0 && y >= 0 && x <= r.width && y <= r.height;
+        if (inside) {
+          // First entry: jump rather than ease in from the last known point,
+          // otherwise the bloom visibly slides in from off screen.
+          if (tamt === 0) { mx = x; my = y; }
+          tx = x; ty = y; tamt = 1;
+        } else {
+          tamt = 0;
+        }
+      }, { passive: true });
+
+      window.addEventListener('blur', function () { tamt = 0; });
+    }
+
     var rafId = 0;
     var running = false;
 
     function frame(t) {
       rafId = requestAnimationFrame(frame);
+
+      if (hoverOn) {
+        var e = cfg.hoverEase;
+        mx += (tx - mx) * e;
+        my += (ty - my) * e;
+        amt += (tamt - amt) * e;
+        // gl_FragCoord counts up from the bottom; pointer Y counts down.
+        gl.uniform2f(U.uMouse, mx * curDpr, canvas.height - my * curDpr);
+        gl.uniform1f(U.uHoverAmt, amt);
+      }
+
       gl.uniform1f(U.uTime, t * 0.01 * speed * 0.1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
