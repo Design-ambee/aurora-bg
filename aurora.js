@@ -18,9 +18,8 @@
     dotSize: 2,
     dotSpacing: 6,
     gain: 1.0,
-    hoverRadius: 120,  // reach of the cursor effect, CSS px · 0 disables it
-    hoverGrow: 1.6,    // how much dots swell at the centre of the cursor
-    hoverGlow: 0.8,    // extra brightness at the centre of the cursor
+    hoverRadius: 130,  // reach of the cursor effect, CSS px · 0 disables it
+    hoverGrow: 0.6,    // how much dots swell at the centre of the cursor
     hoverEase: 0.12    // cursor follow damping · lower = laggier, softer
   };
 
@@ -47,7 +46,6 @@
   'uniform float uHoverRadius;\n' +
   'uniform float uHoverAmt;\n' +
   'uniform float uHoverGrow;\n' +
-  'uniform float uHoverGlow;\n' +
   'out vec4 fragColor;\n' +
   'vec3 permute(vec3 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }\n' +
   'float snoise(vec2 v){\n' +
@@ -113,7 +111,9 @@
   '  }\n' +
   '  float radius = uDotRadius * (1.0 + hover * uHoverGrow);\n' +
   '  float dotMask = 1.0 - smoothstep(radius - 0.5, radius + 0.5, length(cell));\n' +
-  '  vec3 auroraColor = rampColor * uGain * (1.0 + hover * uHoverGlow);\n' +
+  // Colour is deliberately untouched by hover — only the radius above
+  // responds, so dots grow without shifting tone.
+  '  vec3 auroraColor = rampColor * uGain;\n' +
   '  float a = auroraAlpha * dotMask;\n' +
   '  fragColor = vec4(auroraColor * a, a);\n' +
   '}';
@@ -155,7 +155,6 @@
       gain: num(el, 'data-gain', DEFAULTS.gain),
       hoverRadius: num(el, 'data-hover-radius', DEFAULTS.hoverRadius),
       hoverGrow: num(el, 'data-hover-grow', DEFAULTS.hoverGrow),
-      hoverGlow: num(el, 'data-hover-glow', DEFAULTS.hoverGlow),
       hoverEase: num(el, 'data-hover-ease', DEFAULTS.hoverEase)
     };
   }
@@ -215,8 +214,7 @@
       uMouse: loc('uMouse'),
       uHoverRadius: loc('uHoverRadius'),
       uHoverAmt: loc('uHoverAmt'),
-      uHoverGrow: loc('uHoverGrow'),
-      uHoverGlow: loc('uHoverGlow')
+      uHoverGrow: loc('uHoverGrow')
     };
 
     var stops = new Float32Array(
@@ -230,7 +228,6 @@
     gl.uniform1f(U.uContrast, cfg.contrast);
     gl.uniform1f(U.uGain, cfg.gain);
     gl.uniform1f(U.uHoverGrow, cfg.hoverGrow);
-    gl.uniform1f(U.uHoverGlow, cfg.hoverGlow);
 
     var curDpr = 1;
 
